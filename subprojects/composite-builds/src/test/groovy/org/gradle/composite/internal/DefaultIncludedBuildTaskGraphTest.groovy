@@ -27,6 +27,7 @@ import org.gradle.initialization.DefaultProjectDescriptor
 import org.gradle.internal.Factory
 import org.gradle.internal.build.BuildProjectRegistry
 import org.gradle.internal.build.BuildState
+import org.gradle.execution.plan.TaskNode
 import org.gradle.internal.build.BuildStateRegistry
 import org.gradle.internal.build.BuildWorkGraph
 import org.gradle.internal.build.ExecutionResult
@@ -75,7 +76,7 @@ class DefaultIncludedBuildTaskGraphTest extends ConcurrentSpec {
 
     def "cannot schedule tasks when graph has not been created"() {
         when:
-        graph.locateTask(DefaultBuildIdentifier.ROOT, ":task").queueForExecution()
+        graph.locateTask(DefaultBuildIdentifier.ROOT, taskIdentifier(":task")).queueForExecution()
 
         then:
         def e = thrown(IllegalStateException)
@@ -85,7 +86,7 @@ class DefaultIncludedBuildTaskGraphTest extends ConcurrentSpec {
     def "cannot schedule tasks when after graph has finished execution"() {
         when:
         graph.withNewTaskGraph { 12 }
-        graph.locateTask(DefaultBuildIdentifier.ROOT, ":task").queueForExecution()
+        graph.locateTask(DefaultBuildIdentifier.ROOT, taskIdentifier(":task")).queueForExecution()
 
         then:
         def e = thrown(IllegalStateException)
@@ -98,8 +99,8 @@ class DefaultIncludedBuildTaskGraphTest extends ConcurrentSpec {
         def build = build(id)
 
         when:
-        graph.withNewTaskGraph { g ->
-            graph.locateTask(id, ":task").queueForExecution()
+        graph.withNewTaskGraph {
+            graph.locateTask(id, taskIdentifier(":task")).queueForExecution()
         }
 
         then:
@@ -112,7 +113,7 @@ class DefaultIncludedBuildTaskGraphTest extends ConcurrentSpec {
         graph.withNewTaskGraph { g ->
             g.prepareTaskGraph {
             }
-            graph.locateTask(DefaultBuildIdentifier.ROOT, ":task").queueForExecution()
+            graph.locateTask(DefaultBuildIdentifier.ROOT, taskIdentifier(":task")).queueForExecution()
         }
 
         then:
@@ -127,7 +128,7 @@ class DefaultIncludedBuildTaskGraphTest extends ConcurrentSpec {
         def build = build(id, workGraph)
 
         workGraph.execute() >> {
-            graph.locateTask(DefaultBuildIdentifier.ROOT, ":task").queueForExecution()
+            graph.locateTask(DefaultBuildIdentifier.ROOT, taskIdentifier(":task")).queueForExecution()
         }
 
         when:
@@ -149,7 +150,7 @@ class DefaultIncludedBuildTaskGraphTest extends ConcurrentSpec {
             g.prepareTaskGraph {
             }
             g.runWork()
-            graph.locateTask(DefaultBuildIdentifier.ROOT, ":task").queueForExecution()
+            graph.locateTask(DefaultBuildIdentifier.ROOT, taskIdentifier(":task")).queueForExecution()
         }
 
         then:
@@ -215,5 +216,9 @@ class DefaultIncludedBuildTaskGraphTest extends ConcurrentSpec {
         void blocking(Runnable runnable) {
             runnable.run()
         }
+    }
+
+    static TaskIdentifier taskIdentifier(String taskPath) {
+        return TaskIdentifier.of(taskPath, TaskNode.UNKNOWN_ORDINAL)
     }
 }
