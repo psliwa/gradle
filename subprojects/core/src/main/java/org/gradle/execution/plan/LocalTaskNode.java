@@ -16,18 +16,28 @@
 
 package org.gradle.execution.plan;
 
+import com.google.common.collect.Lists;
 import org.gradle.api.Action;
 import org.gradle.api.Task;
+import org.gradle.api.file.FileCollection;
 import org.gradle.api.internal.TaskInternal;
 import org.gradle.api.internal.file.FileCollectionFactory;
 import org.gradle.api.internal.project.ProjectInternal;
 import org.gradle.api.internal.tasks.TaskContainerInternal;
+import org.gradle.api.internal.tasks.TaskPropertyUtils;
+import org.gradle.api.internal.tasks.properties.CompositePropertyVisitor;
 import org.gradle.api.internal.tasks.properties.DefaultTaskProperties;
+import org.gradle.api.internal.tasks.properties.OutputFilePropertySpec;
+import org.gradle.api.internal.tasks.properties.OutputFilesCollector;
+import org.gradle.api.internal.tasks.properties.OutputUnpacker;
+import org.gradle.api.internal.tasks.properties.PropertyVisitor;
 import org.gradle.api.internal.tasks.properties.PropertyWalker;
 import org.gradle.api.internal.tasks.properties.TaskProperties;
 import org.gradle.api.tasks.TaskExecutionException;
+import org.gradle.api.tasks.TaskInstantiationException;
 import org.gradle.internal.ImmutableActionSet;
 import org.gradle.internal.execution.WorkValidationContext;
+import org.gradle.internal.reflect.validation.TypeValidationContext;
 import org.gradle.internal.resources.ResourceDeadlockException;
 import org.gradle.internal.resources.ResourceLock;
 import org.gradle.internal.service.ServiceRegistry;
@@ -191,6 +201,43 @@ public class LocalTaskNode extends TaskNode {
         return task.getIdentityPath().toString();
     }
 
+    private void addOutputFilesToMutations(Iterable<OutputFilePropertySpec> outputFileSpecs) {
+        final MutationInfo mutations = getMutationInfo();
+        outputFileSpecs.forEach(spec -> withDeadlockHandling(
+            this,
+            "an output",
+            "output property '" + spec.getPropertyName() + "'",
+            () -> {
+                File outputLocation = spec.getOutputFile();
+                if (outputLocation != null) {
+                    mutations.outputPaths.add(outputLocation.getAbsolutePath());
+                }
+                mutations.hasOutputs = true;
+            }
+        ));
+    }
+
+    private void addLocalStateFilesToMutations(FileCollection localStateFiles) {
+        final MutationInfo mutations = getMutationInfo();
+        withDeadlockHandling(
+            this,
+            "a local state", "local state properties",
+            () -> localStateFiles
+                .forEach(file -> {
+                    mutations.outputPaths.add(file.getAbsolutePath());
+                    mutations.hasLocalState = true;
+                })
+        );
+    }
+
+    private void addDestroyablesToMutations(FileCollection destroyables) {
+        withDeadlockHandling(
+            this,
+            "a destroyable", "destroyables",
+            () -> destroyables.forEach(file -> getMutationInfo().destroyablePaths.add(file.getAbsolutePath()))
+        );
+    }
+
     @Override
     public void resolveMutations(boolean finalize) {
         final LocalTaskNode taskNode = this;
@@ -202,36 +249,11 @@ public class LocalTaskNode extends TaskNode {
         PropertyWalker propertyWalker = serviceRegistry.get(PropertyWalker.class);
         try {
             taskProperties = DefaultTaskProperties.resolve(propertyWalker, fileCollectionFactory, task);
-            taskProperties.getOutputFileProperties()
-                .forEach(spec -> withDeadlockHandling(
-                    taskNode,
-                    "an output",
-                    "output property '" + spec.getPropertyName() + "'",
-                    () -> {
-                        File outputLocation = spec.getOutputFile();
-                        if (outputLocation != null) {
-                            mutations.outputPaths.add(outputLocation.getAbsolutePath());
-                        }
-                        mutations.hasOutputs = true;
-                    }
-                ));
 
-            withDeadlockHandling(
-                taskNode,
-                "a local state", "local state properties",
-                () -> taskProperties.getLocalStateFiles()
-                    .forEach(file -> {
-                        mutations.outputPaths.add(file.getAbsolutePath());
-                        mutations.hasLocalState = true;
-                    })
-            );
+            addOutputFilesToMutations(taskProperties.getOutputFileProperties());
+            addLocalStateFilesToMutations(taskProperties.getLocalStateFiles());
+            addDestroyablesToMutations(taskProperties.getDestroyableFiles());
 
-            withDeadlockHandling(
-                taskNode,
-                "a destroyable", "destroyables",
-                () -> taskProperties.getDestroyableFiles()
-                    .forEach(file -> mutations.destroyablePaths.add(file.getAbsolutePath()))
-            );
             mutations.hasFileInputs = !taskProperties.getInputFileProperties().isEmpty();
         } catch (Exception e) {
             throw new TaskExecutionException(task, e);
@@ -249,6 +271,55 @@ public class LocalTaskNode extends TaskNode {
             if (mutations.hasLocalState) {
                 throw new IllegalStateException("Task " + taskNode + " has both local state and destroyables defined.  A task can define either local state or destroyables, but not both.");
             }
+        }
+    }
+
+    @Override
+    public void resolveKnownOutputAndDestroyableMutations() {
+        TaskInternal task = getTask();
+        ProjectInternal project = (ProjectInternal) task.getProject();
+        ServiceRegistry serviceRegistry = project.getServices();
+        FileCollectionFactory fileCollectionFactory = serviceRegistry.get(FileCollectionFactory.class);
+        PropertyWalker propertyWalker = serviceRegistry.get(PropertyWalker.class);
+        try {
+            String beanName = task.toString();
+            OutputFilesCollector outputFilesCollector = new OutputFilesCollector();
+            OutputUnpacker outputUnpacker = new OutputUnpacker(
+                beanName,
+                fileCollectionFactory,
+                true,
+                false,
+                outputFilesCollector
+            );
+            final List<Object> localStateFiles = Lists.newArrayList();
+            final List<Object> destroyables = Lists.newArrayList();
+            PropertyVisitor localStateAndDestroyablesVisitor = new PropertyVisitor.Adapter() {
+                @Override
+                public void visitDestroyableProperty(Object value) {
+                    destroyables.add(value);
+                }
+
+                @Override
+                public void visitLocalStateProperty(Object value) {
+                    localStateFiles.add(value);
+                }
+            };
+
+            try {
+                TaskPropertyUtils.visitProperties(propertyWalker, task, TypeValidationContext.NOOP, new CompositePropertyVisitor(
+                    outputUnpacker,
+                    localStateAndDestroyablesVisitor
+                ));
+            } catch (Exception e) {
+                throw new TaskExecutionException(task, e);
+            }
+
+            addOutputFilesToMutations(outputFilesCollector.getFileProperties());
+            addLocalStateFilesToMutations(fileCollectionFactory.resolvingLeniently(localStateFiles));
+            addDestroyablesToMutations(fileCollectionFactory.resolvingLeniently(destroyables));
+        } catch (Exception e) {
+            // TODO is there a better exception to throw here?
+            throw new TaskInstantiationException("Failed to query properties of task " + task, e);
         }
     }
 

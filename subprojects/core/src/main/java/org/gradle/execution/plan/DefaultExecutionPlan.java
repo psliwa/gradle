@@ -495,7 +495,7 @@ public class DefaultExecutionPlan implements ExecutionPlan {
 
     private void createNecessaryCommandLineOrderingRules() {
         // First resolve all mutations that we know about
-        resolveKnownMutations();
+        resolveKnownOutputAndDestroyableMutations();
 
         // Add any ordering rules for each node
         executionQueue.forEach(this::createNecessaryCommandLineOrderingRules);
@@ -717,10 +717,13 @@ public class DefaultExecutionPlan implements ExecutionPlan {
         return mutations;
     }
 
-    private void resolveKnownMutations() {
+    private void resolveKnownOutputAndDestroyableMutations() {
         for (Node node : executionQueue) {
-            if (node.isReady()) {
-                getResolvedMutationInfo(node, false);
+            if (node.isReady() && node instanceof TaskNode) {
+                ((TaskNode)node).resolveKnownOutputAndDestroyableMutations();
+                MutationInfo mutations = node.getMutationInfo();
+                outputHierarchy.recordNodeAccessingLocations(node, mutations.outputPaths);
+                destroyableHierarchy.recordNodeAccessingLocations(node, mutations.destroyablePaths);
             }
         }
     }
