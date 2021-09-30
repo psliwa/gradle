@@ -102,6 +102,11 @@ public interface BuildLifecycleController extends Stoppable {
         void addEntryTasks(List<? extends Task> tasks);
 
         /**
+         * Adds the given tasks and their dependencies to the work graph for this build with the provided command line order.
+         */
+        void addEntryTasks(List<? extends Task> tasks, int ordinal);
+
+        /**
          * Adds the given nodes to the work graph for this build.
          */
         void addNodes(List<? extends Node> nodes);

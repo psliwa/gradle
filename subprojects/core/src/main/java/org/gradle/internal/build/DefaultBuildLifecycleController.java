@@ -207,6 +207,13 @@ public class DefaultBuildLifecycleController implements BuildLifecycleController
         }
 
         @Override
+        public void addEntryTasks(List<? extends Task> tasks, int ordinal) {
+            for (Task task : tasks) {
+                taskGraph.addEntryTasks(Collections.singletonList(task), ordinal);
+            }
+        }
+
+        @Override
         public void addNodes(List<? extends Node> nodes) {
             taskGraph.addNodes(nodes);
         }
